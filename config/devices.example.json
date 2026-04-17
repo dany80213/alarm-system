@@ -1,0 +1,23 @@
+{
+  "A1B2C3": {
+    "name": "front_door",
+    "type": "door",
+    "zone": "perimeter",
+    "position": { "x": 50.0, "y": 90.0 },
+    "enabled": true
+  },
+  "D4E5F6": {
+    "name": "living_room_pir",
+    "type": "motion",
+    "zone": "internal",
+    "position": { "x": 60.0, "y": 70.0 },
+    "enabled": true
+  },
+  "G7H8I9": {
+    "name": "remote_control",
+    "type": "controller",
+    "zone": "perimeter",
+    "position": { "x": 0.0, "y": 0.0 },
+    "enabled": true
+  }
+}

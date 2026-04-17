@@ -1,0 +1,75 @@
+{
+  "A1B2C3": {
+    "name": "porta_ingresso",
+    "type": "door",
+    "zone": "perimeter",
+    "position": {
+      "x": 59.9,
+      "y": 91.9
+    },
+    "enabled": true
+  },
+  "H4I5J6": {
+    "name": "capannone",
+    "type": "motion",
+    "zone": "perimeter",
+    "position": {
+      "x": 84.9,
+      "y": 16.3
+    }
+  },
+  "K7L8M9": {
+    "name": "giardino_pir",
+    "type": "motion",
+    "zone": "perimeter",
+    "position": {
+      "x": 39.5,
+      "y": 88.5
+    }
+  },
+  "D4E5F6": {
+    "name": "soggiorno_pir",
+    "type": "motion",
+    "zone": "internal",
+    "position": {
+      "x": 61.3,
+      "y": 72.1
+    }
+  },
+  "N0O1P2": {
+    "name": "cucina_pir",
+    "type": "motion",
+    "zone": "internal",
+    "position": {
+      "x": 40.6,
+      "y": 70.8
+    }
+  },
+  "Q3R4S5": {
+    "name": "camera_da_letto",
+    "type": "door",
+    "zone": "internal",
+    "position": {
+      "x": 60.5,
+      "y": 51.9
+    }
+  },
+  "D6U89A": {
+    "name": "telecomando",
+    "type": "controller",
+    "zone": "perimeter",
+    "position": {
+      "x": 0.0,
+      "y": 0.0
+    }
+  },
+  "D66EFE": {
+    "name": "cancello",
+    "type": "door",
+    "zone": "perimeter",
+    "position": {
+      "x": 14.0,
+      "y": 58.9
+    }
+  }
+}

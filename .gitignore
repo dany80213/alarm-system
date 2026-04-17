@@ -1,0 +1,35 @@
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ─── Virtual environments ─────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+logs/*.log
+
+# ─── Sensitive config ─────────────────────────────────────────────────────────
+# Users file contains hashed passwords — never commit it
+config/users.json
+
+# ─── IDE / OS ─────────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+
+# ─── Env files ────────────────────────────────────────────────────────────────
+.env
+.env.*

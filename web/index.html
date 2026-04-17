@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Home Alarm System</title>
+  <link rel="stylesheet" href="style.css?v=6" />
+</head>
+<body>
+
+  <!-- ─── Login overlay ─────────────────────────────────────────────────────── -->
+  <div id="login-overlay" class="login-overlay">
+    <div class="login-box">
+      <div class="login-header">
+        <span class="logo">&#9632; ALARM</span>
+        <p class="login-subtitle">Home Security System</p>
+      </div>
+      <form id="login-form" onsubmit="doLogin(event)">
+        <label class="modal-label">
+          Username
+          <input id="login-username" class="modal-input" type="text" autocomplete="username" />
+        </label>
+        <label class="modal-label" style="margin-top:12px">
+          Password
+          <input id="login-password" class="modal-input" type="password" autocomplete="current-password" />
+        </label>
+        <div id="login-error" class="login-error hidden">Credenziali non valide</div>
+        <button type="submit" class="btn btn-modal-add" style="width:100%;margin-top:20px;padding:12px">
+          Accedi &#8594;
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ─── Main app (hidden until auth) ─────────────────────────────────────── -->
+  <div id="app" class="hidden">
+
+    <!-- Header -->
+    <header>
+      <div class="header-left">
+        <span class="logo">&#9632; ALARM</span>
+        <span class="subtitle">Home Security System</span>
+      </div>
+      <div class="header-center">
+        <button id="btn-listening" class="btn-listening" onclick="toggleListening()">
+          &#9679; In ascolto
+        </button>
+      </div>
+      <div class="header-right">
+        <span class="label">STATO</span>
+        <span id="badge-mode" class="badge">DISARMED</span>
+        <span id="badge-alarm" class="badge-alarm hidden">&#9888; ALLARME</span>
+        <span class="header-sep">|</span>
+        <span id="user-info" class="user-info"></span>
+        <button class="btn-logout" onclick="doLogout()">Esci</button>
+        <button class="btn-fullscreen" onclick="toggleFullscreen()" title="Schermo intero">
+          <svg id="fs-icon-enter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
+            <polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/>
+            <line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>
+          </svg>
+          <svg id="fs-icon-exit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" class="hidden">
+            <polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/>
+            <line x1="10" y1="14" x2="3" y2="21"/><line x1="21" y1="3" x2="14" y2="10"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Tab navigation -->
+    <nav class="tab-nav">
+      <button class="tab-btn active" data-tab="dashboard" onclick="switchTab('dashboard')">Dashboard</button>
+      <button class="tab-btn" data-tab="config" onclick="switchTab('config')">Configurazione</button>
+      <button class="tab-btn tab-admin-only hidden" data-tab="users" onclick="switchTab('users')">Utenti</button>
+    </nav>
+
+    <!-- Bridge non autorizzato banner -->
+    <div id="bridge-banner" class="unknown-banner bridge-banner hidden">
+      <span>&#9888; Bridge RF non autorizzato: <code id="bridge-banner-topic"></code></span>
+      <div class="unknown-banner-actions">
+        <button class="btn-banner-add" onclick="addBridgeFromBanner()">+ Registra</button>
+        <button class="btn-banner-dismiss" onclick="dismissBridgeBanner()">Ignora</button>
+      </div>
+    </div>
+
+    <!-- Unknown device banner (shown when NOT listening) -->
+    <div id="unknown-banner" class="unknown-banner hidden">
+      <span>&#9888; Dispositivo non riconosciuto rilevato: <code id="unknown-banner-code"></code></span>
+      <div class="unknown-banner-actions">
+        <span class="unknown-banner-hint">Attiva l'ascolto per aggiungerlo</span>
+        <button class="btn-banner-dismiss" onclick="dismissUnknownBanner()">Ignora</button>
+      </div>
+    </div>
+
+    <!-- ─── Tab: Dashboard ───────────────────────────────────────────────────── -->
+    <div id="tab-dashboard" class="tab-content">
+      <main>
+
+        <!-- Pannello sinistro: comandi + log -->
+        <aside class="panel-left">
+
+          <section class="card" id="controls-card">
+            <h2>Controlli</h2>
+            <div class="btn-group">
+              <button class="btn btn-disarm" onclick="inviaComando('DISARM')">
+                &#9632; Disattiva
+              </button>
+              <button class="btn btn-home" onclick="inviaComando('ARM_HOME')">
+                &#8962; Arm Home
+              </button>
+              <button class="btn btn-away" onclick="inviaComando('ARM_AWAY')">
+                &#9673; Arm Away
+              </button>
+            </div>
+            <button class="btn btn-reset" onclick="inviaComando('RESET')">
+              &#8635; Reset Allarme
+            </button>
+          </section>
+
+          <section class="card">
+            <h2>Log Eventi <span id="event-count" class="count">0</span></h2>
+            <div class="event-log-wrap">
+              <table class="event-table">
+                <thead>
+                  <tr>
+                    <th>Ora</th>
+                    <th>Dispositivo</th>
+                    <th>Zona</th>
+                  </tr>
+                </thead>
+                <tbody id="event-tbody">
+                  <tr><td colspan="3" class="empty">Nessun evento</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+        </aside>
+
+        <!-- Pannello destro: mappa planimetrica -->
+        <section class="panel-right card">
+          <h2>Planimetria</h2>
+          <div id="placement-hint" class="placement-hint hidden">
+            <span>&#8982; Clicca sulla mappa per posizionare il dispositivo</span>
+            <button class="btn-cancel-placement" onclick="cancelPlacement()">&#10005; Annulla</button>
+          </div>
+          <div class="map-container" id="mappa">
+
+            <svg id="planimetria"
+                 xmlns="http://www.w3.org/2000/svg"
+                 viewBox="0 0 860 520"
+                 preserveAspectRatio="none"
+                 style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none">
+
+              <rect width="860" height="520" fill="#0a1628"/>
+              <rect x="195" y="15" width="655" height="490" rx="6"
+                    fill="#061608" stroke="#112611" stroke-width="1.5"/>
+              <rect x="645" y="28" width="170" height="118" rx="2"
+                    fill="#0e0d07" stroke="#272006" stroke-width="2"/>
+              <rect x="650" y="33" width="160" height="108"
+                    fill="#0b0a05" stroke="#1e1905" stroke-width="1"/>
+              <rect x="643" y="82" width="10" height="32" fill="#061608"/>
+              <text x="730" y="57" text-anchor="middle"
+                    font-family="'Courier New',monospace" font-size="10"
+                    fill="#2a2810" letter-spacing="1.5" font-weight="600">CAPANNONE</text>
+              <rect x="48" y="243" width="228" height="24" rx="2" fill="#0c1720"/>
+              <text x="135" y="258" text-anchor="middle"
+                    font-family="'Courier New',monospace" font-size="9"
+                    fill="#162a1e" letter-spacing="1">vialetto</text>
+              <rect x="31" y="216" width="14" height="34" rx="2"
+                    fill="#1b3252" stroke="#2a4f80" stroke-width="1"/>
+              <rect x="31" y="270" width="14" height="34" rx="2"
+                    fill="#1b3252" stroke="#2a4f80" stroke-width="1"/>
+              <line x1="45" y1="255" x2="136" y2="242"
+                    stroke="#2a4f80" stroke-width="2.5" stroke-linecap="round"/>
+              <text x="370" y="42" text-anchor="middle"
+                    font-family="'Courier New',monospace" font-size="10"
+                    fill="#152815" letter-spacing="2" font-weight="600">G I A R D I N O</text>
+              <rect x="274" y="74" width="344" height="193" fill="#0d1f3a"/>
+              <rect x="274" y="273" width="157" height="203" fill="#0a1e15"/>
+              <rect x="437" y="273" width="181" height="203" fill="#0e1c32"/>
+              <rect x="624" y="74" width="150" height="402" fill="#131428"/>
+              <rect x="268" y="68"  width="512" height="6" fill="#3a6a9a"/>
+              <rect x="268" y="68"  width="6"   height="414" fill="#3a6a9a"/>
+              <rect x="774" y="68"  width="6"   height="414" fill="#3a6a9a"/>
+              <rect x="268" y="476" width="212" height="6" fill="#3a6a9a"/>
+              <rect x="550" y="476" width="230" height="6" fill="#3a6a9a"/>
+              <rect x="274" y="267" width="216" height="6" fill="#3a6a9a"/>
+              <rect x="550" y="267" width="68"  height="6" fill="#3a6a9a"/>
+              <rect x="431" y="273" width="6" height="59"  fill="#3a6a9a"/>
+              <rect x="431" y="384" width="6" height="92"  fill="#3a6a9a"/>
+              <rect x="618" y="74"  width="6" height="176" fill="#3a6a9a"/>
+              <rect x="618" y="303" width="6" height="173" fill="#3a6a9a"/>
+              <path d="M490,267 A60,60 0 0,1 550,267"
+                    fill="none" stroke="#4a7aaa" stroke-width="1.5" stroke-dasharray="4,2"/>
+              <path d="M431,332 A52,52 0 0,0 431,384"
+                    fill="none" stroke="#4a7aaa" stroke-width="1.5" stroke-dasharray="4,2"/>
+              <path d="M618,250 A53,53 0 0,1 618,303"
+                    fill="none" stroke="#4a7aaa" stroke-width="1.5" stroke-dasharray="4,2"/>
+              <path d="M480,476 A70,70 0 0,1 550,476"
+                    fill="none" stroke="#4a7aaa" stroke-width="1.5" stroke-dasharray="4,2"/>
+              <text x="446" y="170" text-anchor="middle"
+                    font-family="'Courier New',monospace" font-size="11"
+                    fill="#2d4f78" letter-spacing="1.5" font-weight="600">CAMERA DA LETTO</text>
+              <text x="352" y="374" text-anchor="middle"
+                    font-family="'Courier New',monospace" font-size="11"
+                    fill="#1e4030" letter-spacing="1.5" font-weight="600">CUCINA</text>
+              <text x="527" y="374" text-anchor="middle"
+                    font-family="'Courier New',monospace" font-size="11"
+                    fill="#2d4f78" letter-spacing="1.5" font-weight="600">SOGGIORNO</text>
+              <text x="699" y="275" text-anchor="middle"
+                    font-family="'Courier New',monospace" font-size="11"
+                    fill="#2a3a60" letter-spacing="1.5" font-weight="600">CAMERETTA</text>
+              <text x="22" y="512" font-family="monospace" font-size="9"
+                    fill="#1e3a5f">N &#8593;</text>
+
+            </svg>
+
+          </div>
+        </section>
+
+      </main>
+    </div>
+
+    <!-- ─── Tab: Configurazione ──────────────────────────────────────────────── -->
+    <div id="tab-config" class="tab-content hidden">
+      <div class="config-page">
+
+        <!-- Sensori -->
+        <div class="card">
+          <h2>Sensori e Dispositivi</h2>
+          <div class="table-wrap">
+            <table class="config-table">
+              <thead>
+                <tr>
+                  <th>Codice</th>
+                  <th>Nome</th>
+                  <th>Tipo</th>
+                  <th>Zona</th>
+                  <th>Attivo</th>
+                  <th>Azioni</th>
+                </tr>
+              </thead>
+              <tbody id="config-device-tbody">
+                <tr><td colspan="6" class="empty">Caricamento...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Bridge RF -->
+        <div class="card" style="margin-top:16px">
+          <h2>Bridge RF</h2>
+          <div class="table-wrap">
+            <table class="config-table">
+              <thead>
+                <tr>
+                  <th>Topic MQTT</th>
+                  <th>Client / Label</th>
+                  <th>Attivo</th>
+                  <th>Azioni</th>
+                </tr>
+              </thead>
+              <tbody id="config-bridge-tbody">
+                <tr><td colspan="4" class="empty">Caricamento...</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div id="add-bridge-btn-wrap" class="hidden" style="margin-top:12px">
+            <button class="btn btn-modal-add" style="font-size:13px;padding:8px 18px"
+                    onclick="openBridgeModal('')">+ Aggiungi Bridge</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ─── Tab: Utenti ──────────────────────────────────────────────────────── -->
+    <div id="tab-users" class="tab-content hidden">
+      <div class="config-page">
+        <div class="card">
+          <h2>Gestione Utenti</h2>
+          <div class="table-wrap">
+            <table class="config-table">
+              <thead>
+                <tr>
+                  <th>Username</th>
+                  <th>Livello</th>
+                  <th>Accesso</th>
+                  <th>Azioni</th>
+                </tr>
+              </thead>
+              <tbody id="users-tbody">
+                <tr><td colspan="4" class="empty">Caricamento...</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="add-section">
+            <h3>Aggiungi Utente</h3>
+            <div class="add-form-row">
+              <label class="modal-label">
+                Username
+                <input id="new-user-username" class="modal-input" type="text" />
+              </label>
+              <label class="modal-label">
+                Password
+                <input id="new-user-password" class="modal-input" type="password" />
+              </label>
+              <label class="modal-label">
+                Livello
+                <select id="new-user-level" class="modal-input">
+                  <option value="10">10 &mdash; Solo visualizzazione</option>
+                  <option value="50">50 &mdash; Visualizzazione + Arming</option>
+                  <option value="100">100 &mdash; Accesso completo</option>
+                </select>
+              </label>
+              <button class="btn btn-modal-add add-form-btn" onclick="addUser()">Aggiungi</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /app -->
+
+  <!-- Tooltip custom -->
+  <div id="tooltip" class="tooltip hidden"></div>
+
+  <!-- Device info popup (click su sensore nella mappa) -->
+  <div id="device-popup" class="device-popup hidden">
+    <div class="device-popup-header">
+      <span class="device-popup-title" id="device-popup-name"></span>
+      <button class="device-popup-close" onclick="closeDevicePopup()">&#10005;</button>
+    </div>
+    <div class="device-popup-rows">
+      <div class="device-popup-row">
+        <span class="device-popup-key">Codice</span>
+        <span class="device-popup-val" id="device-popup-code"></span>
+      </div>
+      <div class="device-popup-row">
+        <span class="device-popup-key">Tipo</span>
+        <span class="device-popup-val" id="device-popup-type"></span>
+      </div>
+      <div class="device-popup-row">
+        <span class="device-popup-key">Zona</span>
+        <span class="device-popup-val" id="device-popup-zone"></span>
+      </div>
+      <div class="device-popup-row">
+        <span class="device-popup-key">Stato</span>
+        <span class="device-popup-val" id="device-popup-status"></span>
+      </div>
+      <div class="device-popup-row">
+        <span class="device-popup-key">Ultimo rilevamento</span>
+        <span class="device-popup-val" id="device-popup-last"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Modal: dispositivo sconosciuto ──────────────────────────────────────── -->
+  <div id="modal-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal">
+      <div class="modal-header">
+        <span class="modal-icon">&#9888;</span>
+        <h3>Nuovo dispositivo rilevato</h3>
+      </div>
+      <p class="modal-code">Codice RF: <code id="modal-device-code"></code></p>
+      <div class="modal-body">
+        <label class="modal-label">
+          Nome dispositivo
+          <input id="modal-name" class="modal-input" type="text"
+                 placeholder="es. porta_garage" autocomplete="off" />
+        </label>
+        <label class="modal-label">
+          Tipo
+          <select id="modal-type" class="modal-input">
+            <option value="door">Porta (door)</option>
+            <option value="window">Finestra (window)</option>
+            <option value="motion">Sensore PIR (motion)</option>
+            <option value="gate">Cancello (gate)</option>
+            <option value="controller">Controller</option>
+          </select>
+        </label>
+        <label class="modal-label">
+          Zona
+          <select id="modal-zone" class="modal-input">
+            <option value="perimeter">Perimetrale</option>
+            <option value="internal">Interna</option>
+          </select>
+        </label>
+      </div>
+      <p class="modal-hint">Dopo aver compilato i campi, potrai posizionarlo sulla mappa.</p>
+      <div class="modal-footer">
+        <button class="btn btn-modal-ignore" onclick="ignoreUnknownDevice()">Ignora</button>
+        <button class="btn btn-modal-add" onclick="proceedToPlacement()">Aggiungi dispositivo &#8594;</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Modal: aggiunta bridge RF ─────────────────────────────────────────── -->
+  <div id="bridge-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal">
+      <div class="modal-header">
+        <span class="modal-icon" style="color:#34d399">&#9654;</span>
+        <h3>Registra Bridge RF</h3>
+      </div>
+      <div class="modal-body">
+        <label class="modal-label">
+          Topic MQTT
+          <input id="bridge-modal-topic" class="modal-input" type="text"
+                 placeholder="home/alarm/rf/nome_bridge" autocomplete="off" />
+        </label>
+        <label class="modal-label">
+          Client / Label
+          <input id="bridge-modal-client" class="modal-input" type="text"
+                 placeholder="es. Tasmota Garage" autocomplete="off" />
+        </label>
+      </div>
+      <p class="modal-hint">Dopo aver compilato i campi, potrai posizionarlo sulla mappa.</p>
+      <div class="modal-footer">
+        <button class="btn btn-modal-ignore" onclick="closeBridgeModal()">Annulla</button>
+        <button class="btn btn-modal-add" onclick="proceedToBridgePlacement()">Aggiungi &#8594;</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Modal: modifica bridge RF ──────────────────────────────────────────── -->
+  <div id="edit-bridge-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal">
+      <div class="modal-header">
+        <span class="modal-icon" style="color:#34d399">&#9998;</span>
+        <h3>Modifica Bridge RF</h3>
+      </div>
+      <p class="modal-code">Topic: <code id="edit-bridge-topic-label"></code></p>
+      <div class="modal-body">
+        <label class="modal-label">
+          Client / Label
+          <input id="edit-bridge-client" class="modal-input" type="text" />
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-modal-ignore" onclick="closeEditBridgeModal()">Annulla</button>
+        <button class="btn btn-modal-add" onclick="saveBridgeEdit()">Salva &#8594;</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Modal: modifica dispositivo ────────────────────────────────────────── -->
+  <div id="edit-device-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal">
+      <div class="modal-header">
+        <span class="modal-icon" style="color:var(--primary)">&#9998;</span>
+        <h3>Modifica Dispositivo</h3>
+      </div>
+      <p class="modal-code">Codice: <code id="edit-device-code"></code></p>
+      <div class="modal-body">
+        <label class="modal-label">
+          Nome
+          <input id="edit-device-name" class="modal-input" type="text" />
+        </label>
+        <label class="modal-label">
+          Tipo
+          <select id="edit-device-type" class="modal-input">
+            <option value="door">Porta (door)</option>
+            <option value="window">Finestra (window)</option>
+            <option value="motion">Sensore PIR (motion)</option>
+            <option value="gate">Cancello (gate)</option>
+            <option value="controller">Controller</option>
+          </select>
+        </label>
+        <label class="modal-label">
+          Zona
+          <select id="edit-device-zone" class="modal-input">
+            <option value="perimeter">Perimetrale</option>
+            <option value="internal">Interna</option>
+          </select>
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-modal-ignore" onclick="closeEditDeviceModal()">Annulla</button>
+        <button class="btn btn-modal-add" onclick="saveDeviceEdit()">Salva &#8594;</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Modal: modifica utente ──────────────────────────────────────────────── -->
+  <div id="edit-user-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal">
+      <div class="modal-header">
+        <span class="modal-icon" style="color:var(--primary)">&#9998;</span>
+        <h3>Modifica Utente</h3>
+      </div>
+      <p class="modal-code">Utente: <code id="edit-user-name-label"></code></p>
+      <div class="modal-body">
+        <label class="modal-label">
+          Nuova Password <span style="font-weight:400;text-transform:none">(lascia vuoto per non cambiare)</span>
+          <input id="edit-user-password" class="modal-input" type="password" placeholder="••••••••" />
+        </label>
+        <label class="modal-label">
+          Livello
+          <select id="edit-user-level" class="modal-input">
+            <option value="10">10 &mdash; Solo visualizzazione</option>
+            <option value="50">50 &mdash; Visualizzazione + Arming</option>
+            <option value="100">100 &mdash; Accesso completo</option>
+          </select>
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-modal-ignore" onclick="closeEditUserModal()">Annulla</button>
+        <button class="btn btn-modal-add" onclick="saveUserEdit()">Salva &#8594;</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js?v=6"></script>
+</body>
+</html>
