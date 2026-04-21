@@ -66,6 +66,11 @@ let isListening    = true;
 let activeTab      = 'dashboard';
 let lastEventPerDevice = {};   // device_name -> { time, device, zone }
 
+// ─── PIN modal state ──────────────────────────────────────────────────────────
+
+let pinPendingAction = null;
+let pinBuffer        = '';
+
 // ─── Modal / placement state ─────────────────────────────────────────────────
 
 let modalActiveCode       = null;
@@ -154,6 +159,7 @@ async function doLogin(e) {
 
 async function doLogout() {
   try { await api('POST', '/auth/logout'); } catch (_) {}
+  if (_sseSource) { _sseSource.close(); _sseSource = null; }
   showLogin();
 }
 
@@ -177,6 +183,12 @@ function applyLevelRestrictions() {
     if (userLevel >= 100) el.classList.remove('hidden');
     else                  el.classList.add('hidden');
   });
+
+  // Sezioni visibili solo a L100
+  ['pin-settings-card', 'timers-settings-card', 'notifications-settings-card'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('hidden', userLevel < 100);
+  });
 }
 
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
@@ -187,8 +199,11 @@ function switchTab(tab) {
   document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
   document.getElementById(`tab-${tab}`).classList.remove('hidden');
   document.querySelector(`.tab-btn[data-tab="${tab}"]`).classList.add('active');
-  if (tab === 'config')    loadConfigDevices();
-  if (tab === 'users')     loadUsers();
+  if (tab === 'config') {
+    loadConfigDevices();
+    if (userLevel >= 100) { loadTimers(); loadNotifications(); }
+  }
+  if (tab === 'users') loadUsers();
   if (tab === 'dashboard') refreshMap();
 }
 
@@ -386,9 +401,18 @@ function aggiornaMappa(triggerDevice) {
 
 // ─── Status panel ────────────────────────────────────────────────────────────
 
+const MODE_LABELS = {
+  DISARMED:   'NON ARMATO',
+  ARMING:     'ARMAMENTO…',
+  ARMED_HOME: 'PERIMETRALE',
+  ARMED_AWAY: 'COMPLETO',
+  TRIGGERED:  'ALLARME',
+  ENTERING:   'INGRESSO…',
+};
+
 function aggiornaBadgeModalita(mode) {
   const badge = document.getElementById('badge-mode');
-  badge.textContent = mode;
+  badge.textContent = MODE_LABELS[mode] || mode;
   badge.className = `badge ${mode}`;
 }
 
@@ -438,26 +462,179 @@ function aggiornaEventi(eventi) {
   }).join('');
 }
 
+// ─── PIN Modal ────────────────────────────────────────────────────────────────
+
+const PIN_ACTIONS = new Set(['ARM_HOME', 'ARM_AWAY', 'DISARM']);
+
+const PIN_LABELS = {
+  ARM_HOME: { icon: '\u2302', title: 'Perimetrale',     color: 'var(--primary)' },
+  ARM_AWAY: { icon: '\u25CE', title: 'Completo',        color: '#fb923c' },
+  DISARM:   { icon: '\u25A0', title: 'Disattiva',       color: 'var(--accent)' },
+};
+
+function openPinModal(action) {
+  pinPendingAction = action;
+  pinBuffer        = '';
+  _updatePinDisplay();
+  document.getElementById('pin-error').classList.add('hidden');
+  document.getElementById('pin-display').classList.remove('pin-shake');
+
+  const info = PIN_LABELS[action] || { icon: '\uD83D\uDD12', title: action, color: 'var(--primary)' };
+  const iconEl  = document.getElementById('pin-modal-icon');
+  const titleEl = document.getElementById('pin-modal-title');
+  iconEl.textContent  = info.icon;
+  iconEl.style.color  = info.color;
+  titleEl.textContent = info.title;
+
+  document.getElementById('pin-modal').classList.remove('hidden');
+}
+
+function closePinModal() {
+  pinPendingAction = null;
+  pinBuffer        = '';
+  document.getElementById('pin-modal').classList.add('hidden');
+}
+
+function pinDigit(d) {
+  if (pinBuffer.length >= 8) return;
+  pinBuffer += d;
+  _updatePinDisplay();
+}
+
+function pinBackspace() {
+  pinBuffer = pinBuffer.slice(0, -1);
+  _updatePinDisplay();
+}
+
+function _updatePinDisplay() {
+  const dots = document.getElementById('pin-dots');
+  dots.textContent = '\u25CF'.repeat(pinBuffer.length);
+}
+
+async function confirmPin() {
+  if (!pinPendingAction) return;
+  if (!pinBuffer) {
+    const disp = document.getElementById('pin-display');
+    disp.classList.remove('pin-shake');
+    void disp.offsetWidth;
+    disp.classList.add('pin-shake');
+    return;
+  }
+
+  const action = pinPendingAction;
+  const pin    = pinBuffer;
+
+  document.getElementById('pin-error').classList.add('hidden');
+
+  try {
+    const res = await api('POST', '/command', { action, pin });
+
+    if (res.status === 403) {
+      pinBuffer = '';
+      _updatePinDisplay();
+      document.getElementById('pin-error').classList.remove('hidden');
+      const disp = document.getElementById('pin-display');
+      disp.classList.remove('pin-shake');
+      void disp.offsetWidth;
+      disp.classList.add('pin-shake');
+      return;
+    }
+
+    if (!res.ok) return; // errore generico: mantieni il modal aperto
+
+    const data = await res.json();
+    closePinModal();
+    if (data.state) aggiornaStato(data.state);
+  } catch (_) {}
+}
+
+// ─── Salva PIN dalla pagina configurazione ────────────────────────────────────
+
+async function saveAlarmPin() {
+  const newPin  = document.getElementById('pin-new').value.trim();
+  const confPin = document.getElementById('pin-confirm').value.trim();
+  const msgEl   = document.getElementById('pin-settings-msg');
+
+  const showMsg = (txt, ok) => {
+    msgEl.textContent = txt;
+    msgEl.style.color = ok ? 'var(--accent)' : 'var(--danger)';
+    msgEl.classList.remove('hidden');
+  };
+
+  if (!newPin)               return showMsg('Inserisci il nuovo PIN', false);
+  if (!/^\d+$/.test(newPin)) return showMsg('Il PIN deve contenere solo cifre', false);
+  if (newPin.length < 4)     return showMsg('Il PIN deve avere almeno 4 cifre', false);
+  if (newPin !== confPin)    return showMsg('I PIN non corrispondono', false);
+
+  try {
+    const res = await api('PUT', '/settings/alarm-pin', { pin: newPin });
+    if (res.ok) {
+      document.getElementById('pin-new').value    = '';
+      document.getElementById('pin-confirm').value = '';
+      showMsg('PIN aggiornato con successo', true);
+    } else {
+      const err = await res.json().catch(() => ({}));
+      showMsg('Errore: ' + (err.detail || res.status), false);
+    }
+  } catch (_) {
+    showMsg('Errore di rete', false);
+  }
+}
+
 // ─── Comandi ─────────────────────────────────────────────────────────────────
 
 async function inviaComando(action) {
   if (userLevel < 50) return;
+  if (PIN_ACTIONS.has(action)) {
+    openPinModal(action);
+    return;
+  }
+  // RESET non richiede PIN
   try {
     const data = await api('POST', '/command', { action }).then(r => r.json());
     if (data.state) aggiornaStato(data.state);
   } catch (_) {}
 }
 
-// ─── Polling ─────────────────────────────────────────────────────────────────
+// ─── SSE: push real-time dallo stato ─────────────────────────────────────────
+
+let _sseSource = null;
+
+function startSSE() {
+  if (_sseSource) { _sseSource.close(); _sseSource = null; }
+  if (!authToken) return;
+
+  const url = `/state/stream?token=${encodeURIComponent(authToken)}`;
+  const es   = new EventSource(url);
+
+  es.onmessage = (e) => {
+    try { aggiornaStato(JSON.parse(e.data)); } catch (_) {}
+  };
+
+  es.onerror = () => {
+    es.close();
+    _sseSource = null;
+    // Riprova SSE dopo 5 secondi
+    setTimeout(startSSE, 5000);
+  };
+
+  _sseSource = es;
+}
+
+// ─── Polling (solo eventi e dati secondari) ───────────────────────────────────
 
 async function poll() {
+  // Stato: solo se SSE non è attivo
+  if (!_sseSource || _sseSource.readyState === EventSource.CLOSED) {
+    try {
+      const stato = await api('GET', '/state').then(r => r.json());
+      aggiornaStato(stato);
+    } catch (_) {}
+  }
+  // Log eventi: sempre via polling
   try {
-    const [statoRes, eventiRes] = await Promise.all([
-      api('GET', '/state').then(r => r.json()),
-      api('GET', '/events?limit=30').then(r => r.json()),
-    ]);
-    aggiornaStato(statoRes);
-    aggiornaEventi(eventiRes);
+    const eventi = await api('GET', '/events?limit=30').then(r => r.json());
+    aggiornaEventi(eventi);
   } catch (_) {}
 }
 
@@ -909,10 +1086,12 @@ async function loadConfigDevices() {
     const canEdit = userLevel >= 100;
 
     if (entries.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" class="empty">Nessun dispositivo</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" class="empty">Nessun dispositivo</td></tr>';
     } else {
       tbody.innerHTML = entries.map(([code, dev]) => {
-        const enabled = dev.enabled !== false;
+        const enabled    = dev.enabled !== false;
+        const entryDelay = dev.entry_delay === true;
+        const showEntryToggle = canEdit && dev.type !== 'controller';
         return `
         <tr>
           <td><code class="code-badge">${code}</code></td>
@@ -926,6 +1105,14 @@ async function loadConfigDevices() {
                   <span class="toggle-slider"></span>
                  </label>`
               : `<span class="${enabled ? 'status-active' : 'status-inactive'}">${enabled ? 'Attivo' : 'Disatt.'}</span>`}
+          </td>
+          <td>
+            ${showEntryToggle
+              ? `<label class="toggle-switch" title="Abilita ritardo ingresso per questo sensore">
+                  <input type="checkbox" ${entryDelay ? 'checked' : ''} onchange="toggleDeviceEntryDelay('${code}', this.checked)">
+                  <span class="toggle-slider"></span>
+                 </label>`
+              : `<span class="muted">—</span>`}
           </td>
           <td class="action-cell">
             ${canEdit ? `
@@ -990,6 +1177,23 @@ async function toggleDeviceEnabled(code, enabled) {
     const dispositivi = await api('GET', '/devices').then(r => r.json());
     dispositiviCache  = dispositivi;
     renderizzaMappa(dispositivi, bridgesCache);
+  } catch (_) {
+    alert('Errore di rete durante l\'aggiornamento');
+    loadConfigDevices();
+  }
+}
+
+async function toggleDeviceEntryDelay(code, entry_delay) {
+  try {
+    const res = await api('PUT', `/devices/${code}`, { entry_delay });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert('Errore: ' + (err.detail || res.status));
+      loadConfigDevices();
+      return;
+    }
+    const dispositivi = await api('GET', '/devices').then(r => r.json());
+    dispositiviCache  = dispositivi;
   } catch (_) {
     alert('Errore di rete durante l\'aggiornamento');
     loadConfigDevices();
@@ -1145,6 +1349,15 @@ async function deleteUser(username) {
 // ─── Keyboard shortcuts ───────────────────────────────────────────────────────
 
 document.addEventListener('keydown', (e) => {
+  // PIN modal intercepts keys first
+  if (!document.getElementById('pin-modal').classList.contains('hidden')) {
+    if (e.key >= '0' && e.key <= '9') { e.preventDefault(); pinDigit(e.key); }
+    else if (e.key === 'Backspace')    { e.preventDefault(); pinBackspace(); }
+    else if (e.key === 'Enter')        { e.preventDefault(); confirmPin(); }
+    else if (e.key === 'Escape')       { e.preventDefault(); closePinModal(); }
+    return;
+  }
+
   if (e.key === 'Escape') {
     if (!document.getElementById('device-popup').classList.contains('hidden')) {
       closeDevicePopup();
@@ -1166,6 +1379,128 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// ─── Timers settings ─────────────────────────────────────────────────────────
+
+async function loadTimers() {
+  try {
+    const timers = await api('GET', '/settings/timers').then(r => r.json());
+    document.getElementById('timer-arming').value = timers.arming_delay_sec ?? 30;
+    document.getElementById('timer-entry').value  = timers.entry_delay_sec  ?? 30;
+    document.getElementById('timer-cooldown').value = timers.rf_cooldown_sec ?? 2;
+  } catch (_) {}
+}
+
+async function saveTimers() {
+  const arming   = parseInt(document.getElementById('timer-arming').value,   10);
+  const entry    = parseInt(document.getElementById('timer-entry').value,    10);
+  const cooldown = parseInt(document.getElementById('timer-cooldown').value, 10);
+  const msg      = document.getElementById('timers-msg');
+
+  if (isNaN(arming) || isNaN(entry) || isNaN(cooldown) || arming < 0 || entry < 0 || cooldown < 0) {
+    msg.textContent = 'Valori non validi (devono essere >= 0).';
+    msg.style.color = 'var(--danger)';
+    msg.classList.remove('hidden');
+    return;
+  }
+  try {
+    const res = await api('PUT', '/settings/timers', {
+      arming_delay_sec: arming,
+      entry_delay_sec:  entry,
+      rf_cooldown_sec:  cooldown,
+    });
+    if (!res.ok) {
+      const e = await res.json();
+      msg.textContent = 'Errore: ' + e.detail;
+      msg.style.color = 'var(--danger)';
+    } else {
+      msg.textContent = 'Timer salvati.';
+      msg.style.color = 'var(--accent)';
+    }
+    msg.classList.remove('hidden');
+    setTimeout(() => msg.classList.add('hidden'), 3000);
+  } catch (_) {}
+}
+
+// ─── Notifications settings ───────────────────────────────────────────────────
+
+async function loadNotifications() {
+  try {
+    const n = await api('GET', '/settings/notifications').then(r => r.json());
+    document.getElementById('notif-enabled').checked = n.enabled ?? false;
+    const smtp = n.smtp || {};
+    document.getElementById('notif-smtp-host').value     = smtp.host      ?? '';
+    document.getElementById('notif-smtp-port').value     = smtp.port      ?? 587;
+    document.getElementById('notif-smtp-user').value     = smtp.user      ?? '';
+    document.getElementById('notif-smtp-pass').value     = smtp.password  ?? '';
+    document.getElementById('notif-smtp-from').value     = smtp.from_addr ?? '';
+    document.getElementById('notif-smtp-tls').checked    = smtp.use_tls   ?? true;
+    document.getElementById('notif-recipients').value    =
+      (n.recipients || []).join('\n');
+  } catch (_) {}
+}
+
+async function saveNotifications() {
+  const msg = document.getElementById('notif-msg');
+  const recipientsRaw = document.getElementById('notif-recipients').value;
+  const recipients = recipientsRaw
+    .split(/[\n,;]+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+
+  const payload = {
+    enabled: document.getElementById('notif-enabled').checked,
+    smtp: {
+      host:      document.getElementById('notif-smtp-host').value.trim(),
+      port:      parseInt(document.getElementById('notif-smtp-port').value, 10) || 587,
+      user:      document.getElementById('notif-smtp-user').value.trim(),
+      password:  document.getElementById('notif-smtp-pass').value,
+      from_addr: document.getElementById('notif-smtp-from').value.trim(),
+      use_tls:   document.getElementById('notif-smtp-tls').checked,
+    },
+    recipients,
+  };
+
+  try {
+    const res = await api('PUT', '/settings/notifications', payload);
+    if (!res.ok) {
+      const e = await res.json();
+      msg.textContent = 'Errore: ' + e.detail;
+      msg.style.color = 'var(--danger)';
+    } else {
+      msg.textContent = 'Impostazioni salvate.';
+      msg.style.color = 'var(--accent)';
+    }
+    msg.classList.remove('hidden');
+    setTimeout(() => msg.classList.add('hidden'), 3000);
+  } catch (_) {}
+}
+
+async function sendTestEmail() {
+  const btn = document.getElementById('btn-test-email');
+  const msg = document.getElementById('notif-msg');
+  btn.disabled = true;
+  btn.textContent = 'Invio in corso…';
+  try {
+    const res = await api('POST', '/settings/notifications/test', {});
+    if (!res.ok) {
+      const e = await res.json();
+      msg.textContent = 'Errore invio: ' + e.detail;
+      msg.style.color = 'var(--danger)';
+    } else {
+      msg.textContent = 'Email di test inviata con successo.';
+      msg.style.color = 'var(--accent)';
+    }
+    msg.classList.remove('hidden');
+    setTimeout(() => msg.classList.add('hidden'), 5000);
+  } catch (_) {
+    msg.textContent = 'Errore di rete.';
+    msg.style.color = 'var(--danger)';
+    msg.classList.remove('hidden');
+  }
+  btn.disabled = false;
+  btn.textContent = 'Invia Email di Test';
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 async function startPolling() {
@@ -1181,7 +1516,8 @@ async function startPolling() {
 
   await fetchListening();
   await poll();
-  setInterval(poll,                3000);
+  startSSE();                              // push real-time stato
+  setInterval(poll,                2000);  // fallback + eventi
   setInterval(pollUnknown,         3000);
   setInterval(pollUnknownBridges,  3000);
   setInterval(fetchListening,     15000);

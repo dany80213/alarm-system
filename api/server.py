@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import hashlib
@@ -8,26 +9,51 @@ from urllib.parse import unquote
 
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-WEB_DIR   = Path(__file__).parent.parent / "web"
-USERS_PATH = Path(__file__).parent.parent / "config" / "users.json"
+WEB_DIR       = Path(__file__).parent.parent / "web"
+USERS_PATH    = Path(__file__).parent.parent / "config" / "users.json"
+SETTINGS_PATH = Path(__file__).parent.parent / "config" / "settings.json"
 
 VALID_TYPES  = {"door", "window", "motion", "gate", "controller"}
 VALID_ZONES  = {"perimeter", "internal"}
 VALID_LEVELS = {10, 50, 100}
 
 # ─── In-memory auth state ─────────────────────────────────────────────────────
-_sessions: dict = {}    # token -> {"username": str, "level": int}
-_listening: bool = True  # accept / process unknown devices
+_sessions:   dict = {}     # token -> {"username": str, "level": int}
+_listening:  bool = True   # accept / process unknown devices
+_alarm_pin:  str  = "1234" # codice PIN allarme (inizializzato in create_app)
 
 
 # ─── Pydantic models ──────────────────────────────────────────────────────────
 class CommandRequest(BaseModel):
     action: str
+    pin: Optional[str] = None
+
+class UpdateAlarmPinRequest(BaseModel):
+    pin: str
+
+class SmtpConfig(BaseModel):
+    host:      str  = ""
+    port:      int  = 587
+    user:      str  = ""
+    password:  str  = ""
+    from_addr: str  = ""
+    use_tls:   bool = True
+
+class NotificationsRequest(BaseModel):
+    enabled:    bool       = False
+    smtp:       SmtpConfig = SmtpConfig()
+    recipients: list       = []
+
+class TimersRequest(BaseModel):
+    arming_delay_sec: int = 30
+    entry_delay_sec:  int = 30
+    rf_cooldown_sec:  int = 2
 
 class DismissRequest(BaseModel):
     code: str
@@ -52,6 +78,7 @@ class UpdateDeviceRequest(BaseModel):
     zone: Optional[str] = None
     position: Optional[DevicePosition] = None
     enabled: Optional[bool] = None
+    entry_delay: Optional[bool] = None
 
 class AddBridgeRequest(BaseModel):
     client: str
@@ -92,6 +119,16 @@ def _save_users(users: dict):
     with open(USERS_PATH, "w") as f:
         json.dump(users, f, indent=2)
 
+def _load_settings_file() -> dict:
+    if SETTINGS_PATH.exists():
+        with open(SETTINGS_PATH) as f:
+            return json.load(f)
+    return {}
+
+def _save_settings_file(settings: dict):
+    with open(SETTINGS_PATH, "w") as f:
+        json.dump(settings, f, indent=2)
+
 def _auth(authorization: Optional[str], min_level: int = 10) -> dict:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Non autenticato")
@@ -105,8 +142,9 @@ def _auth(authorization: Optional[str], min_level: int = 10) -> dict:
 
 
 # ─── App factory ──────────────────────────────────────────────────────────────
-def create_app(state_manager, event_engine) -> FastAPI:
-    global _listening
+def create_app(state_manager, event_engine, notifier=None) -> FastAPI:
+    global _listening, _alarm_pin
+    _alarm_pin = str(state_manager._settings.get("alarm_pin", "1234"))
 
     app = FastAPI(title="Home Alarm System API")
     app.add_middleware(
@@ -167,9 +205,139 @@ def create_app(state_manager, event_engine) -> FastAPI:
     @app.post("/command")
     def post_command(req: CommandRequest, authorization: Optional[str] = Header(None)):
         _auth(authorization, 50)
+        PIN_REQUIRED = {"ARM_HOME", "ARM_AWAY", "DISARM"}
+        if req.action in PIN_REQUIRED:
+            if req.pin != _alarm_pin:
+                raise HTTPException(status_code=403, detail="Codice PIN non valido")
         payload = json.dumps({"action": req.action}).encode()
         event_engine.process_command(payload)
         return {"ok": True, "state": state_manager.get_state()}
+
+    @app.put("/settings/alarm-pin")
+    def update_alarm_pin(req: UpdateAlarmPinRequest, authorization: Optional[str] = Header(None)):
+        global _alarm_pin
+        _auth(authorization, 100)
+        if not req.pin or not req.pin.isdigit():
+            raise HTTPException(status_code=400, detail="Il PIN deve contenere solo cifre")
+        if len(req.pin) < 4:
+            raise HTTPException(status_code=400, detail="Il PIN deve avere almeno 4 cifre")
+        _alarm_pin = req.pin
+        cfg = _load_settings_file()
+        cfg["alarm_pin"] = req.pin
+        _save_settings_file(cfg)
+        logger.info(f"Codice PIN allarme aggiornato")
+        return {"ok": True}
+
+    # ── Timers ────────────────────────────────────────────────────────────────
+
+    @app.get("/settings/timers")
+    def get_timers(authorization: Optional[str] = Header(None)):
+        _auth(authorization, 100)
+        return state_manager._settings.get("timers", {})
+
+    @app.put("/settings/timers")
+    def update_timers(req: TimersRequest, authorization: Optional[str] = Header(None)):
+        _auth(authorization, 100)
+        if req.arming_delay_sec < 0 or req.entry_delay_sec < 0 or req.rf_cooldown_sec < 0:
+            raise HTTPException(status_code=400, detail="I timer non possono essere negativi")
+        timers = {
+            "arming_delay_sec": req.arming_delay_sec,
+            "entry_delay_sec":  req.entry_delay_sec,
+            "rf_cooldown_sec":  req.rf_cooldown_sec,
+        }
+        state_manager._settings["timers"] = timers
+        cfg = _load_settings_file()
+        cfg["timers"] = timers
+        _save_settings_file(cfg)
+        logger.info(f"Timer aggiornati: {timers}")
+        return {"ok": True}
+
+    # ── Notifiche email ───────────────────────────────────────────────────────
+
+    @app.get("/settings/notifications")
+    def get_notifications(authorization: Optional[str] = Header(None)):
+        _auth(authorization, 100)
+        cfg   = _load_settings_file()
+        notif = dict(cfg.get("notifications", {}))
+        # Maschera la password nella risposta
+        if "smtp" in notif:
+            smtp = dict(notif["smtp"])
+            if smtp.get("password"):
+                smtp["password"] = "••••••••"
+            notif["smtp"] = smtp
+        return notif
+
+    @app.put("/settings/notifications")
+    def update_notifications(req: NotificationsRequest,
+                             authorization: Optional[str] = Header(None)):
+        _auth(authorization, 100)
+        cfg   = _load_settings_file()
+        notif = cfg.get("notifications", {})
+
+        smtp_data = req.smtp.dict()
+        # Se la password è il placeholder, mantieni quella salvata
+        if smtp_data.get("password") == "••••••••":
+            smtp_data["password"] = notif.get("smtp", {}).get("password", "")
+
+        new_notif = {
+            "enabled":    req.enabled,
+            "smtp":       smtp_data,
+            "recipients": req.recipients,
+        }
+        cfg["notifications"] = new_notif
+        _save_settings_file(cfg)
+        state_manager._settings["notifications"] = new_notif
+        logger.info(f"Notifiche aggiornate: enabled={req.enabled}, "
+                    f"recipients={req.recipients}")
+        return {"ok": True}
+
+    @app.post("/settings/notifications/test")
+    def test_notifications(authorization: Optional[str] = Header(None)):
+        _auth(authorization, 100)
+        if notifier is None:
+            raise HTTPException(status_code=503, detail="Notifier non disponibile")
+        if not notifier.is_enabled():
+            raise HTTPException(status_code=400, detail="Le notifiche email sono disabilitate")
+        ok, msg = notifier.send_test()
+        if not ok:
+            raise HTTPException(status_code=500, detail=msg)
+        return {"ok": True}
+
+    # ── SSE: push stato in tempo reale ───────────────────────────────────────
+
+    @app.get("/state/stream")
+    async def state_stream(token: Optional[str] = None):
+        """
+        Server-Sent Events: invia lo stato ogni volta che cambia.
+        Auth tramite query param ?token=... (EventSource non supporta headers).
+        """
+        sess = _sessions.get(token or "")
+        if not sess or sess["level"] < 10:
+            raise HTTPException(status_code=401, detail="Non autenticato")
+
+        async def generate():
+            current = state_manager.get_state()
+            yield f"data: {json.dumps(current)}\n\n"
+            last_change = current["last_change"]
+            while True:
+                await asyncio.sleep(0.3)
+                try:
+                    current = state_manager.get_state()
+                    if current["last_change"] != last_change:
+                        last_change = current["last_change"]
+                        yield f"data: {json.dumps(current)}\n\n"
+                except Exception:
+                    break
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     # ── Unknown devices ───────────────────────────────────────────────────────
 
@@ -239,6 +407,8 @@ def create_app(state_manager, event_engine) -> FastAPI:
             updates["position"] = {"x": req.position.x, "y": req.position.y}
         if req.enabled is not None:
             updates["enabled"] = req.enabled
+        if req.entry_delay is not None:
+            updates["entry_delay"] = req.entry_delay
         state_manager.update_device(code, updates)
         return {"ok": True, "code": code, "device": state_manager.get_devices()[code]}
 

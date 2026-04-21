@@ -21,6 +21,8 @@ logs/*.log
 # ─── Sensitive config ─────────────────────────────────────────────────────────
 # Users file contains hashed passwords — never commit it
 config/users.json
+# settings.json contains SMTP password and alarm PIN — never commit it
+config/settings.json
 
 # ─── IDE / OS ─────────────────────────────────────────────────────────────────
 .DS_Store

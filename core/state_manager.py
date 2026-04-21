@@ -7,7 +7,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-VALID_MODES = {"DISARMED", "ARMING", "ARMED_HOME", "ARMED_AWAY", "TRIGGERED"}
+VALID_MODES = {"DISARMED", "ARMING", "ARMED_HOME", "ARMED_AWAY", "TRIGGERED", "ENTERING"}
 
 
 class StateManager:
@@ -28,6 +28,8 @@ class StateManager:
         self._last_change = time.time()
         self._arming_target = None
         self._arming_timer = None
+        self._entry_timer = None
+        self._entry_generation = 0
 
         max_events = settings.get("max_events", 200)
         self._events = deque(maxlen=max_events)
@@ -165,6 +167,7 @@ class StateManager:
 
         with self._lock:
             self._cancel_arming_timer()
+            self._cancel_entry_timer_locked()
 
             if new_mode == "DISARMED":
                 self._mode = "DISARMED"
@@ -209,18 +212,63 @@ class StateManager:
             self._arming_timer = None
         self._arming_target = None
 
+    # ─── Entry delay ──────────────────────────────────────────────────────────
+
+    def start_entry_delay(self, device_name: str, delay_sec: int, on_expire) -> None:
+        """
+        Imposta lo stato ENTERING e avvia un timer.
+        Se il sistema viene disarmato prima della scadenza, il timer viene
+        annullato tramite il meccanismo di generazione.
+        """
+        with self._lock:
+            self._cancel_entry_timer_locked()
+            self._entry_generation += 1
+            gen = self._entry_generation
+            self._mode = "ENTERING"
+            self._triggered_device = device_name
+            self._last_change = time.time()
+
+        def _guarded():
+            with self._lock:
+                if self._entry_generation != gen:
+                    logger.info("Entry delay annullato (sistema disarmato)")
+                    return
+            on_expire()
+
+        timer = threading.Timer(delay_sec, _guarded)
+        timer.daemon = True
+        timer.start()
+        self._entry_timer = timer
+        logger.info(f"Ritardo ingresso avviato: {delay_sec}s per '{device_name}'")
+
+    def _cancel_entry_timer_locked(self):
+        """Da chiamare con self._lock già acquisito."""
+        self._entry_generation += 1
+        if self._entry_timer and self._entry_timer.is_alive():
+            self._entry_timer.cancel()
+        self._entry_timer = None
+
     # ─── Allarme ──────────────────────────────────────────────────────────────
 
-    def trigger_alarm(self, device_name: str):
+    def trigger_alarm(self, device_name: str) -> bool:
+        """
+        Ritorna True se l'allarme è stato attivato, False se il sistema
+        era già disarmato (es. utente ha disarmato durante l'entry delay).
+        """
         with self._lock:
+            if self._mode == "DISARMED":
+                logger.info(f"trigger_alarm ignorato: sistema già disarmato ({device_name})")
+                return False
             self._mode = "TRIGGERED"
             self._alarm = True
             self._triggered_device = device_name
             self._last_change = time.time()
             logger.warning(f"ALLARME TRIGGERATO da: {device_name}")
+            return True
 
     def reset_alarm(self):
         with self._lock:
+            self._cancel_entry_timer_locked()
             self._alarm = False
             self._triggered_device = None
             self._mode = "DISARMED"

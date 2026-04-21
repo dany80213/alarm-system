@@ -16,12 +16,29 @@
     "unknown_bridge": "home/alarm/unknown_bridge"
   },
   "timers": {
-    "arming_delay_sec": 30
+    "arming_delay_sec": 30,
+    "entry_delay_sec": 30,
+    "rf_cooldown_sec": 2
   },
   "api": {
     "host": "0.0.0.0",
     "port": 8080
   },
+  "notifications": {
+    "enabled": false,
+    "smtp": {
+      "host": "smtp.gmail.com",
+      "port": 587,
+      "user": "tua@email.com",
+      "password": "TUA_APP_PASSWORD",
+      "from_addr": "Allarme Casa <tua@email.com>",
+      "use_tls": true
+    },
+    "recipients": [
+      "destinatario@email.com"
+    ]
+  },
   "log_file": "logs/events.log",
-  "max_events": 200
+  "max_events": 200,
+  "alarm_pin": "1234"
 }

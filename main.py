@@ -10,6 +10,7 @@ from core.alarm_logic import AlarmLogic
 from core.rf_decoder import RFDecoder
 from core.event_engine import EventEngine
 from core.mqtt_client import MQTTClient
+from core.notifier import EmailNotifier
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -51,11 +52,12 @@ state_mgr = StateManager(
     bridges_path=bridges_path,
 )
 alarm_logic = AlarmLogic(state_mgr)
-rf_decoder = RFDecoder(state_mgr)
+rf_decoder  = RFDecoder(state_mgr)
+notifier    = EmailNotifier(settings)
 
 # Risolvi dipendenza circolare: MQTTClient <-> EventEngine
-mqtt_client = MQTTClient(settings, event_engine=None)
-event_engine = EventEngine(state_mgr, alarm_logic, rf_decoder, mqtt_client.publish)
+mqtt_client  = MQTTClient(settings, event_engine=None)
+event_engine = EventEngine(state_mgr, alarm_logic, rf_decoder, mqtt_client.publish, notifier)
 mqtt_client.event_engine = event_engine
 
 # ─── Avvio ────────────────────────────────────────────────────────────────────
@@ -64,7 +66,7 @@ def avvia_api():
     import uvicorn
     from api.server import create_app
 
-    app = create_app(state_mgr, event_engine)
+    app = create_app(state_mgr, event_engine, notifier)
     api_cfg = settings.get("api", {})
     uvicorn.run(
         app,

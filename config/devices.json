@@ -7,7 +7,8 @@
       "x": 59.9,
       "y": 91.9
     },
-    "enabled": true
+    "enabled": true,
+    "entry_delay": false
   },
   "H4I5J6": {
     "name": "capannone",
@@ -16,7 +17,8 @@
     "position": {
       "x": 84.9,
       "y": 16.3
-    }
+    },
+    "entry_delay": true
   },
   "K7L8M9": {
     "name": "giardino_pir",
