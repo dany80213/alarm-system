@@ -464,12 +464,13 @@ function aggiornaEventi(eventi) {
 
 // ─── PIN Modal ────────────────────────────────────────────────────────────────
 
-const PIN_ACTIONS = new Set(['ARM_HOME', 'ARM_AWAY', 'DISARM']);
+const PIN_ACTIONS = new Set(['ARM_HOME', 'ARM_AWAY', 'DISARM', 'RESET']);
 
 const PIN_LABELS = {
   ARM_HOME: { icon: '\u2302', title: 'Perimetrale',     color: 'var(--primary)' },
   ARM_AWAY: { icon: '\u25CE', title: 'Completo',        color: '#fb923c' },
   DISARM:   { icon: '\u25A0', title: 'Disattiva',       color: 'var(--accent)' },
+  RESET:    { icon: '\u21BA', title: 'Reset Allarme',   color: 'var(--danger)' },
 };
 
 function openPinModal(action) {
@@ -589,7 +590,6 @@ async function inviaComando(action) {
     openPinModal(action);
     return;
   }
-  // RESET non richiede PIN
   try {
     const data = await api('POST', '/command', { action }).then(r => r.json());
     if (data.state) aggiornaStato(data.state);

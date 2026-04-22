@@ -205,7 +205,7 @@ def create_app(state_manager, event_engine, notifier=None) -> FastAPI:
     @app.post("/command")
     def post_command(req: CommandRequest, authorization: Optional[str] = Header(None)):
         _auth(authorization, 50)
-        PIN_REQUIRED = {"ARM_HOME", "ARM_AWAY", "DISARM"}
+        PIN_REQUIRED = {"ARM_HOME", "ARM_AWAY", "DISARM", "RESET"}
         if req.action in PIN_REQUIRED:
             if req.pin != _alarm_pin:
                 raise HTTPException(status_code=403, detail="Codice PIN non valido")
